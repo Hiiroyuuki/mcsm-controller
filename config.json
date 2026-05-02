@@ -1,0 +1,42 @@
+{
+  "mcsm": {
+    "base_url": "http://127.0.0.1:23333",
+    "apikey": "replace_with_your_apikey",
+    "daemon_id": "replace_with_your_daemon_id",
+    "instance_uuid": "replace_with_your_instance_uuid",
+    "timeout": 10
+  },
+  "skill": {
+    "allow_instance_override": true,
+    "allowed_actions": [
+      "status",
+      "start",
+      "stop",
+      "restart",
+      "kill",
+      "update_task",
+      "send_command",
+      "get_output",
+      "get_messages",
+      "list_instances",
+      "get_instance",
+      "reinstall"
+    ]
+  },
+  "chat_control": {
+    "trigger_word": "openclaw",
+    "poll_interval": 2,
+    "output_size": 128,
+    "openclaw_command": [
+      "openclaw",
+      "run"
+    ],
+    "openclaw_timeout": 120,
+    "response_mode": "msg",
+    "response_prefix": "OpenClaw",
+    "ack_message": "Received. Processing your request.",
+    "error_message": "Request failed. Please try again later.",
+    "max_reply_length": 180,
+    "system_prompt": "You are OpenClaw, a Minecraft server assistant. The following content is a player request captured from in-game chat. Understand the request and handle it."
+  }
+}
