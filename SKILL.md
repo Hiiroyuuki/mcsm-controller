@@ -51,6 +51,7 @@ Optional `chat_control` settings in `config.json`:
 - `chat_control.output_size`
 - `chat_control.openclaw_command`
 - `chat_control.openclaw_timeout`
+- `chat_control.openclaw_reply_idle_timeout`
 - `chat_control.response_mode`
 - `chat_control.response_prefix`
 - `chat_control.ack_message`
@@ -174,14 +175,14 @@ Typical trigger examples:
 When triggered, `chat_control.py`:
 
 1. extracts the player name and request text
-2. sends the request to the configured `chat_control.openclaw_command`
+2. sends the request to one persistent OpenClaw agent process
 3. sends the OpenClaw reply back to the player with `msg` or to all players with `say`
 
 Required runtime expectation:
 
-- `chat_control.openclaw_command` must be configured to a valid local OpenClaw command
-- if the command contains `{prompt}`, the prompt is injected into that argument
-- otherwise the prompt is sent to OpenClaw through stdin
+- `chat_control.openclaw_command` should normally be `["openclaw", "agent", "--local"]`
+- `chat_control.py` starts that agent once during listener startup and reuses it for later player requests
+- player requests are sent to the persistent agent through stdin
 
 ## Chat Control Rules For OpenClaw
 

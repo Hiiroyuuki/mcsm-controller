@@ -24,14 +24,16 @@
     ]
   },
   "chat_control": {
-    "trigger_word": "openclaw",
+    "trigger_word": "@openclaw",
     "poll_interval": 2,
     "output_size": 128,
     "openclaw_command": [
       "openclaw",
-      "run"
+      "agent",
+      "--local"
     ],
     "openclaw_timeout": 120,
+    "openclaw_reply_idle_timeout": 2,
     "response_mode": "msg",
     "response_prefix": "OpenClaw",
     "ack_message": "Received. Processing your request.",

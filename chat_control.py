@@ -1,12 +1,16 @@
 import argparse
 import json
+import queue
+import re
 import shlex
 import subprocess
+import threading
 import time
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Sequence, Tuple
+from typing import Deque, Dict, List, Optional, Sequence, TextIO, Tuple
 
 from mcsm_skill import MCSMSkillError, build_controller, load_config
 
@@ -18,6 +22,8 @@ DEFAULT_SYSTEM_PROMPT = (
     "The following content is a player request captured from in-game chat. "
     "Understand the request and handle it."
 )
+DEFAULT_OPENCLAW_COMMAND = ["openclaw", "agent", "--local"]
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
 @dataclass
@@ -27,6 +33,7 @@ class ChatControlConfig:
     output_size: int
     openclaw_command: List[str]
     openclaw_timeout: int
+    openclaw_reply_idle_timeout: float
     response_mode: str
     response_prefix: str
     ack_message: str
@@ -47,13 +54,7 @@ def load_chat_config(config_path: Optional[str] = None) -> Tuple[Dict, ChatContr
     elif isinstance(raw_command, list) and all(isinstance(item, str) for item in raw_command):
         openclaw_command = list(raw_command)
     else:
-        openclaw_command = []
-
-    if not openclaw_command:
-        raise MCSMSkillError(
-            "chat_control.openclaw_command is required, for example: "
-            '["openclaw", "run"]'
-        )
+        openclaw_command = list(DEFAULT_OPENCLAW_COMMAND)
 
     runtime = ChatControlConfig(
         trigger_word=str(chat_config.get("trigger_word", "openclaw")).strip() or "openclaw",
@@ -61,6 +62,7 @@ def load_chat_config(config_path: Optional[str] = None) -> Tuple[Dict, ChatContr
         output_size=int(chat_config.get("output_size", 128)),
         openclaw_command=openclaw_command,
         openclaw_timeout=int(chat_config.get("openclaw_timeout", 120)),
+        openclaw_reply_idle_timeout=float(chat_config.get("openclaw_reply_idle_timeout", 2.0)),
         response_mode=str(chat_config.get("response_mode", "msg")).strip().lower(),
         response_prefix=str(chat_config.get("response_prefix", "OpenClaw")).strip() or "OpenClaw",
         ack_message=str(chat_config.get("ack_message", "Received. Processing your request.")).strip(),
@@ -75,6 +77,8 @@ def load_chat_config(config_path: Optional[str] = None) -> Tuple[Dict, ChatContr
         raise MCSMSkillError("chat_control.output_size must be greater than 0")
     if runtime.openclaw_timeout <= 0:
         raise MCSMSkillError("chat_control.openclaw_timeout must be greater than 0")
+    if runtime.openclaw_reply_idle_timeout <= 0:
+        raise MCSMSkillError("chat_control.openclaw_reply_idle_timeout must be greater than 0")
     if runtime.response_mode not in {"none", "msg", "say"}:
         raise MCSMSkillError("chat_control.response_mode must be one of: none, msg, say")
 
@@ -154,34 +158,148 @@ def build_openclaw_prompt(player: str, request_text: str, raw_message: str, conf
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def invoke_openclaw(prompt: str, config: ChatControlConfig) -> str:
-    command = list(config.openclaw_command)
-    formatted_command = [part.replace("{prompt}", prompt) for part in command]
-    send_prompt_via_stdin = all("{prompt}" not in part for part in command)
+def clean_agent_output(text: str, sentinel: Optional[str] = None) -> str:
+    output = ANSI_ESCAPE_RE.sub("", text)
+    if sentinel and sentinel in output:
+        output = output.split(sentinel, 1)[0]
 
-    completed = subprocess.run(
-        formatted_command,
-        input=prompt if send_prompt_via_stdin else None,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=config.openclaw_timeout,
-        check=False,
-    )
+    lines = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if sentinel and stripped == sentinel:
+            continue
+        lines.append(stripped)
 
-    stdout = completed.stdout.strip()
-    stderr = completed.stderr.strip()
+    return "\n".join(lines).strip()
 
-    if completed.returncode != 0:
-        message = stderr or stdout or f"openclaw exited with code {completed.returncode}"
-        raise RuntimeError(message)
 
-    if stdout:
-        return stdout
-    if stderr:
-        return stderr
-    return "OpenClaw finished processing your request."
+class OpenClawAgentSession:
+    def __init__(self, config: ChatControlConfig):
+        self.config = config
+        self.process: Optional[subprocess.Popen[str]] = None
+        self.output_queue: "queue.Queue[Tuple[str, str]]" = queue.Queue()
+        self.reader_threads: List[threading.Thread] = []
+
+    def start(self) -> None:
+        if self.process and self.process.poll() is None:
+            return
+
+        self.process = subprocess.Popen(
+            list(self.config.openclaw_command),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=0,
+        )
+        self.reader_threads = []
+
+        if self.process.stdout:
+            self._start_reader("stdout", self.process.stdout)
+        if self.process.stderr:
+            self._start_reader("stderr", self.process.stderr)
+
+        self._drain_startup_output()
+
+    def _start_reader(self, source: str, stream: TextIO) -> None:
+        thread = threading.Thread(target=self._read_stream, args=(source, stream), daemon=True)
+        thread.start()
+        self.reader_threads.append(thread)
+
+    def _read_stream(self, source: str, stream: TextIO) -> None:
+        while True:
+            try:
+                char = stream.read(1)
+            except ValueError:
+                return
+            if char == "":
+                return
+            self.output_queue.put((source, char))
+
+    def _drain_startup_output(self) -> None:
+        self._drain_output_for(min(1.0, self.config.openclaw_reply_idle_timeout))
+
+    def _drain_output_for(self, duration: float) -> None:
+        end_at = time.monotonic() + duration
+        while time.monotonic() < end_at:
+            try:
+                self.output_queue.get(timeout=0.05)
+            except queue.Empty:
+                pass
+
+    def _ensure_running(self) -> subprocess.Popen[str]:
+        self.start()
+        if not self.process:
+            raise RuntimeError("failed to start openclaw agent")
+        if self.process.poll() is not None:
+            raise RuntimeError(f"openclaw agent exited with code {self.process.returncode}")
+        if not self.process.stdin:
+            raise RuntimeError("openclaw agent stdin is not available")
+        return self.process
+
+    def submit(self, prompt: str) -> str:
+        process = self._ensure_running()
+        sentinel = f"OPENCLAW_CHAT_DONE_{uuid.uuid4().hex}"
+        agent_input = (
+            f"{prompt}\n\n"
+            "Reply to the Minecraft player request above. "
+            f"When your reply is complete, print {sentinel} on its own line."
+        )
+
+        process.stdin.write(agent_input.rstrip() + "\n")
+        process.stdin.flush()
+
+        stdout_parts: List[str] = []
+        stderr_parts: List[str] = []
+        deadline = time.monotonic() + self.config.openclaw_timeout
+        last_output_at: Optional[float] = None
+
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                break
+
+            try:
+                source, char = self.output_queue.get(timeout=0.1)
+            except queue.Empty:
+                if last_output_at and time.monotonic() - last_output_at >= self.config.openclaw_reply_idle_timeout:
+                    break
+                continue
+
+            last_output_at = time.monotonic()
+            if source == "stderr":
+                stderr_parts.append(char)
+            else:
+                stdout_parts.append(char)
+                if sentinel in "".join(stdout_parts):
+                    self._drain_output_for(0.2)
+                    break
+
+        stdout = clean_agent_output("".join(stdout_parts), sentinel)
+        stderr = clean_agent_output("".join(stderr_parts), sentinel)
+
+        if process.poll() is not None:
+            message = stderr or stdout or f"openclaw agent exited with code {process.returncode}"
+            raise RuntimeError(message)
+
+        if not stdout and not stderr:
+            raise RuntimeError("openclaw agent did not return a response")
+
+        return stdout or stderr
+
+    def close(self) -> None:
+        if not self.process or self.process.poll() is not None:
+            return
+
+        self.process.terminate()
+        try:
+            self.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait(timeout=5)
 
 
 def remember_line(cache: Deque[str], value: str) -> bool:
@@ -227,7 +345,7 @@ def send_reply(controller, player: str, text: str, config: ChatControlConfig) ->
             raise RuntimeError(result.get("error", "failed to send response"))
 
 
-def process_chat_line(controller, line: str, config: ChatControlConfig) -> bool:
+def process_chat_line(controller, line: str, config: ChatControlConfig, agent: OpenClawAgentSession) -> bool:
     parsed = extract_chat_message(line)
     if not parsed:
         return False
@@ -241,7 +359,7 @@ def process_chat_line(controller, line: str, config: ChatControlConfig) -> bool:
         send_reply(controller, player, config.ack_message, config)
 
     prompt = build_openclaw_prompt(player, request_text, message, config)
-    response = invoke_openclaw(prompt, config)
+    response = agent.submit(prompt)
     send_reply(controller, player, response, config)
     return True
 
@@ -249,42 +367,48 @@ def process_chat_line(controller, line: str, config: ChatControlConfig) -> bool:
 def run_loop(config_path: Optional[str] = None) -> None:
     config, runtime = load_chat_config(config_path=config_path)
     controller = build_controller(config)
+    agent = OpenClawAgentSession(runtime)
     previous_lines: List[str] = []
     seen_lines: Deque[str] = deque(maxlen=512)
 
     print(f"[chat_control] listening for trigger word: {runtime.trigger_word}")
+    print(f"[chat_control] starting persistent OpenClaw agent: {' '.join(runtime.openclaw_command)}")
+    agent.start()
 
-    while True:
-        result = controller.get_output(size=runtime.output_size)
-        if not result.get("ok"):
-            print(f"[chat_control] failed to fetch output: {result.get('error')}")
+    try:
+        while True:
+            result = controller.get_output(size=runtime.output_size)
+            if not result.get("ok"):
+                print(f"[chat_control] failed to fetch output: {result.get('error')}")
+                time.sleep(runtime.poll_interval)
+                continue
+
+            current_lines = normalize_output_lines(result.get("output", ""))
+            new_lines = diff_new_lines(previous_lines, current_lines)
+            previous_lines = current_lines
+
+            for line in new_lines:
+                if not remember_line(seen_lines, line):
+                    continue
+
+                try:
+                    handled = process_chat_line(controller, line, runtime, agent)
+                except Exception as exc:
+                    print(f"[chat_control] request handling failed: {exc}")
+                    parsed = extract_chat_message(line)
+                    if parsed and runtime.error_message and runtime.response_mode != "none":
+                        try:
+                            send_reply(controller, parsed[0], runtime.error_message, runtime)
+                        except Exception as send_exc:
+                            print(f"[chat_control] failed to send error reply: {send_exc}")
+                    continue
+
+                if handled:
+                    print(f"[chat_control] handled line: {line}")
+
             time.sleep(runtime.poll_interval)
-            continue
-
-        current_lines = normalize_output_lines(result.get("output", ""))
-        new_lines = diff_new_lines(previous_lines, current_lines)
-        previous_lines = current_lines
-
-        for line in new_lines:
-            if not remember_line(seen_lines, line):
-                continue
-
-            try:
-                handled = process_chat_line(controller, line, runtime)
-            except Exception as exc:
-                print(f"[chat_control] request handling failed: {exc}")
-                parsed = extract_chat_message(line)
-                if parsed and runtime.error_message and runtime.response_mode != "none":
-                    try:
-                        send_reply(controller, parsed[0], runtime.error_message, runtime)
-                    except Exception as send_exc:
-                        print(f"[chat_control] failed to send error reply: {send_exc}")
-                continue
-
-            if handled:
-                print(f"[chat_control] handled line: {line}")
-
-        time.sleep(runtime.poll_interval)
+    finally:
+        agent.close()
 
 
 def main() -> None:
