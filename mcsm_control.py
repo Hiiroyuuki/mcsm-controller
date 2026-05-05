@@ -114,6 +114,47 @@ class MCSMController:
 
         return f"{self.base_url}{path}?{parse.urlencode(merged_query, doseq=True)}"
 
+    def _format_request_context(self, path: str, query: Optional[Dict[str, Any]] = None) -> str:
+        """
+        Build a short, API-key-safe request context string for diagnostics.
+        """
+        context_parts = [f"url={self.base_url}{path}"]
+        if query:
+            daemon_id = query.get("daemonId")
+            instance_uuid = query.get("uuid")
+            if daemon_id:
+                context_parts.append(f"daemon_id={daemon_id}")
+            if instance_uuid:
+                context_parts.append(f"instance_uuid={instance_uuid}")
+        return ", ".join(context_parts)
+
+    def _connection_hint(self, query: Optional[Dict[str, Any]] = None) -> Optional[str]:
+        """
+        Provide a focused hint when the request looks like it may be targeting
+        the wrong MCSManager panel.
+        """
+        if not query or not query.get("daemonId"):
+            return None
+
+        hostname = parse.urlparse(self.base_url).hostname
+        if hostname in {"127.0.0.1", "localhost"}:
+            return (
+                "base_url is pointing at localhost. If MCSManager is running on another machine, "
+                "this request is hitting the wrong panel, so a valid daemon_id can still appear "
+                "as \"remote node does not exist\"."
+            )
+        return None
+
+    def _action_context(self, daemon_id=None, instance_uuid=None) -> Dict[str, Any]:
+        """
+        Build consistent diagnostic context for action results.
+        """
+        return {
+            "base_url": self.base_url,
+            "daemon_id": daemon_id or self.daemon_id,
+            "instance_uuid": instance_uuid or self.instance_uuid,
+        }
+
     def _parse_response_body(self, payload: bytes):
         """
         Purpose
@@ -180,14 +221,28 @@ class MCSMController:
         except error.HTTPError as exc:
             err_data = self._parse_response_body(exc.read())
             message = self._extract_error_message(err_data) or f"HTTP {exc.code}"
+            request_context = self._format_request_context(path, query)
+            hint = self._connection_hint(query)
+            if hint:
+                message = f"{message} ({request_context}). Hint: {hint}"
+            else:
+                message = f"{message} ({request_context})"
             raise MCSMApiError(message) from exc
         except error.URLError as exc:
-            raise MCSMApiError(str(exc.reason)) from exc
+            request_context = self._format_request_context(path, query)
+            raise MCSMApiError(f"{exc.reason} ({request_context})") from exc
 
         if isinstance(data, dict):
             status = data.get("status")
             if status not in (None, 200):
-                raise MCSMApiError(self._extract_error_message(data) or f"API status {status}")
+                message = self._extract_error_message(data) or f"API status {status}"
+                request_context = self._format_request_context(path, query)
+                hint = self._connection_hint(query)
+                if hint:
+                    message = f"{message} ({request_context}). Hint: {hint}"
+                else:
+                    message = f"{message} ({request_context})"
+                raise MCSMApiError(message)
 
         return data
 
@@ -318,7 +373,7 @@ class MCSMController:
                 "raw": data,
             }
 
-        return self._run(action, daemon_id=daemon_id)
+        return self._run(action, **self._action_context(daemon_id=daemon_id))
 
     def get_instance(self, daemon_id=None, instance_uuid=None):
         """
@@ -352,7 +407,7 @@ class MCSMController:
                 "raw": data,
             }
 
-        return self._run(action, daemon_id=daemon_id, instance_uuid=instance_uuid)
+        return self._run(action, **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid))
 
     def create_instance(self, daemon_id: str, config: Dict[str, Any]):
         """
@@ -382,7 +437,7 @@ class MCSMController:
                 "raw": data,
             }
 
-        return self._run(action, daemon_id=daemon_id)
+        return self._run(action, **self._action_context(daemon_id=daemon_id))
 
     def update_instance(self, config: Dict[str, Any], daemon_id=None, instance_uuid=None):
         """
@@ -455,7 +510,9 @@ class MCSMController:
                 "raw": data,
             }
 
-        return self._run(action, daemon_id=daemon_id, instance_uuids=uuids)
+        context = self._action_context(daemon_id=daemon_id)
+        context["instance_uuids"] = uuids
+        return self._run(action, **context)
 
     def _instance_operation(self, path: str, method="GET", body=None, daemon_id=None, instance_uuid=None, extra_query=None):
         """
@@ -515,8 +572,7 @@ class MCSMController:
         """
         return self._run(
             lambda: self._instance_operation("/api/protected_instance/open", daemon_id=daemon_id, instance_uuid=instance_uuid),
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
+            **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid),
         )
 
     def stop(self, daemon_id=None, instance_uuid=None):
@@ -536,8 +592,7 @@ class MCSMController:
         """
         return self._run(
             lambda: self._instance_operation("/api/protected_instance/stop", daemon_id=daemon_id, instance_uuid=instance_uuid),
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
+            **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid),
         )
 
     def restart(self, daemon_id=None, instance_uuid=None):
@@ -557,8 +612,7 @@ class MCSMController:
         """
         return self._run(
             lambda: self._instance_operation("/api/protected_instance/restart", daemon_id=daemon_id, instance_uuid=instance_uuid),
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
+            **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid),
         )
 
     def kill(self, daemon_id=None, instance_uuid=None):
@@ -578,8 +632,7 @@ class MCSMController:
         """
         return self._run(
             lambda: self._instance_operation("/api/protected_instance/kill", daemon_id=daemon_id, instance_uuid=instance_uuid),
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
+            **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid),
         )
 
     def update_task(self, daemon_id=None, instance_uuid=None):
@@ -605,8 +658,7 @@ class MCSMController:
                 instance_uuid=instance_uuid,
                 extra_query={"task_name": "update"},
             ),
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
+            **self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid),
         )
 
     def send_command(self, command: str, daemon_id=None, instance_uuid=None):
@@ -625,6 +677,8 @@ class MCSMController:
         ======
         - dict: Send result, including the command field
         """
+        context = self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid)
+        context["command"] = command
         return self._run(
             lambda: self._instance_operation(
                 "/api/protected_instance/command",
@@ -633,9 +687,7 @@ class MCSMController:
                 instance_uuid=instance_uuid,
             )
             | {"command": command},
-            daemon_id=daemon_id,
-            instance_uuid=instance_uuid,
-            command=command,
+            **context,
         )
 
     def get_output(self, size: int = 64, daemon_id=None, instance_uuid=None):
@@ -673,7 +725,9 @@ class MCSMController:
                 "raw": data,
             }
 
-        return self._run(action, daemon_id=daemon_id, instance_uuid=instance_uuid, size=size)
+        context = self._action_context(daemon_id=daemon_id, instance_uuid=instance_uuid)
+        context["size"] = size
+        return self._run(action, **context)
 
     def get_messages(self, size: int = 64, limit: Optional[int] = 100, since_id: Optional[int] = None, daemon_id=None, instance_uuid=None):
         """

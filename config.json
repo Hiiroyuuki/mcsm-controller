@@ -1,12 +1,32 @@
 {
   "mcsm": {
-    "base_url": "http://127.0.0.1:23333",
-    "apikey": "replace_with_your_apikey",
-    "daemon_id": "replace_with_your_daemon_id",
-    "instance_uuid": "replace_with_your_instance_uuid",
-    "timeout": 10
+    "MON": {
+      "base_url": "http://192.168.3.2:23333",
+      "apikey": "a1bc89cecddd44168d73059c554b3499",
+      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
+      "instance_uuid": "bd0801a1b82a439fa766f86971837929",
+      "timeout": 10,
+      "chat_control_enabled": true
+    },
+    "vanila_era": {
+      "base_url": "http://192.168.3.2:23333",
+      "apikey": "a1bc89cecddd44168d73059c554b3499",
+      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
+      "instance_uuid": "7a8cfdd92f5f48aab58930eca5453dc9",
+      "timeout": 10,
+      "chat_control_enabled": true
+    },
+    "pure_1_20_1": {
+      "base_url": "http://192.168.3.2:23333",
+      "apikey": "a1bc89cecddd44168d73059c554b3499",
+      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
+      "instance_uuid": "2176753f344f415f963108c2147bd596",
+      "timeout": 10,
+      "chat_control_enabled": true
+    }
   },
   "skill": {
+    "default_instance": "MON",
     "allow_instance_override": true,
     "allowed_actions": [
       "status",
@@ -24,6 +44,7 @@
     ]
   },
   "chat_control": {
+    "config_instance": "pure_1_20_1",
     "trigger_word": "@openclaw",
     "poll_interval": 2,
     "output_size": 128,
@@ -32,13 +53,17 @@
       "agent",
       "--local"
     ],
+    "openclaw_session_args": ["--agent", "chatcontrol"],
+    "openclaw_message_arg": "-m",
     "openclaw_timeout": 120,
-    "openclaw_reply_idle_timeout": 2,
     "response_mode": "msg",
     "response_prefix": "OpenClaw",
     "ack_message": "Received. Processing your request.",
     "error_message": "Request failed. Please try again later.",
+    "log_mode": "both",
+    "debug_errors_to_chat": true,
+    "log_file": "chat_control.log",
     "max_reply_length": 180,
-    "system_prompt": "You are OpenClaw, a Minecraft server assistant. The following content is a player request captured from in-game chat. Understand the request and handle it."
+    "system_prompt": "You are OpenClaw, a Minecraft server assistant. The following content is a player request captured from in-game chat. Understand the request and handle it by using the MCSM controller skill."
   }
 }
