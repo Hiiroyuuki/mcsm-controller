@@ -307,6 +307,7 @@ When `chat_control_enabled` is `true`, successful `start` calls launch `chat_con
 
 ## Usage Rules
 
+- If the user asks about onboard, onboarding, initialization, first-time setup, or setting up this skill, read `onboard.md` first and help the user complete the onboard steps described there.
 - Prefer `skill.default_instance` from `config.json` unless the task clearly requires another configured profile.
 - Use `config_instance` when the request should target a different named `mcsm` profile.
 - Do not use actions outside `skill.allowed_actions`.

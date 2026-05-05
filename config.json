@@ -1,32 +1,24 @@
 {
   "mcsm": {
-    "MON": {
+    "instance_name1": {
       "base_url": "http://192.168.3.2:23333",
-      "apikey": "a1bc89cecddd44168d73059c554b3499",
-      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
-      "instance_uuid": "bd0801a1b82a439fa766f86971837929",
+      "apikey": "replace_with_your_apikey",
+      "daemon_id": "replace_with_your_daemon_id",
+      "instance_uuid": "replace_with_your_instance_uuid",
       "timeout": 10,
       "chat_control_enabled": true
     },
-    "vanila_era": {
+    "instance_name2": {
       "base_url": "http://192.168.3.2:23333",
-      "apikey": "a1bc89cecddd44168d73059c554b3499",
-      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
-      "instance_uuid": "7a8cfdd92f5f48aab58930eca5453dc9",
-      "timeout": 10,
-      "chat_control_enabled": true
-    },
-    "pure_1_20_1": {
-      "base_url": "http://192.168.3.2:23333",
-      "apikey": "a1bc89cecddd44168d73059c554b3499",
-      "daemon_id": "15b766d6a4b64f7d950e78390aa1d5ca",
-      "instance_uuid": "2176753f344f415f963108c2147bd596",
+      "apikey": "replace_with_your_apikey",
+      "daemon_id": "replace_with_your_daemon_id",
+      "instance_uuid": "replace_with_your_instance_uuid",
       "timeout": 10,
       "chat_control_enabled": true
     }
   },
   "skill": {
-    "default_instance": "MON",
+    "default_instance": "instance_name1",
     "allow_instance_override": true,
     "allowed_actions": [
       "status",
